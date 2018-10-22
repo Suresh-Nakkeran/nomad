@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/armon/circbuf"
 	"github.com/fsouza/go-dockerclient"
@@ -1129,12 +1131,31 @@ func (d *DockerDriver) containerBinds(driverConfig *DockerDriverConfig, ctx *Exe
 	allocDirBind := fmt.Sprintf("%s:%s", ctx.TaskDir.SharedAllocDir, ctx.TaskEnv.EnvMap[env.AllocDir])
 	taskLocalBind := fmt.Sprintf("%s:%s", ctx.TaskDir.LocalDir, ctx.TaskEnv.EnvMap[env.TaskLocalDir])
 	secretDirBind := fmt.Sprintf("%s:%s", ctx.TaskDir.SecretsDir, ctx.TaskEnv.EnvMap[env.SecretsDir])
-	binds := []string{allocDirBind, taskLocalBind, secretDirBind}
+	initbinds := []string{allocDirBind, taskLocalBind, secretDirBind}
+	binds := []string{}
 
 	volumesEnabled := d.config.ReadBoolDefault(dockerVolumesConfigOption, dockerVolumesConfigDefault)
 
 	if !volumesEnabled && driverConfig.VolumeDriver != "" {
 		return nil, fmt.Errorf("%s is false; cannot use volume driver %q", dockerVolumesConfigOption, driverConfig.VolumeDriver)
+	}
+
+	for _, userbind := range initbinds {
+		parts := strings.Split(userbind, ":")
+		if len(parts) < 2 {
+			return nil, fmt.Errorf("invalid docker volume: %q", userbind)
+		}
+
+		if len(parts) > 2 && runtime.GOOS == "windows" {
+			if len(parts) == 4 && len(parts[2]) == 1 && unicode.IsLetter([]rune(parts[2])[0]) && parts[3][0] == '\\' {
+				parts = append(parts[:2], "/"+parts[2]+strings.Replace(parts[3], "\\", "/", -1))
+			}
+			if len(parts[0]) == 1 && unicode.IsLetter([]rune(parts[0])[0]) && parts[1][0] == '\\' {
+				parts = append([]string{"/" + parts[0] + strings.Replace(parts[1], "\\", "/", -1)}, parts[2:]...)
+			}
+		}
+
+		binds = append(binds, strings.Join(parts, ":"))
 	}
 
 	for _, userbind := range driverConfig.Volumes {
